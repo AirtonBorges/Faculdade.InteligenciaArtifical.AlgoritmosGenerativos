@@ -1,64 +1,150 @@
 ﻿using System.Globalization;
+using CsvHelper;
+using CsvHelper.Configuration;
+using Faculdade.InteligenciaArtifical.AlgoritmosGenerativos.Factories;
+using Faculdade.InteligenciaArtifical.AlgoritmosGenerativos.Models;
 
-var linhas = File.ReadAllLines("cotacoes_b3_202_05.csv");
-var cotacoes = new List<Cotacao>();
+const int quantidadeDias = 24;
+const int quantidadeAcoesPorDia = 10;
+const int quantidadeGenes = (quantidadeDias / 2) * quantidadeAcoesPorDia;
+const int montanteInicialCentavos = 100000;
 
-for (int i = 1; i < linhas.Length; i++) {
-    var partes = linhas[i].Split(';');
-    var data = DateTime.Parse(partes[0]);
-    var codigo = partes[1];
-    if (codigo.Length != 5) continue;
-    var preco = double.Parse(partes[2].Replace(",", "."), CultureInfo.InvariantCulture);
-    cotacoes.Add(new Cotacao { Data = data, Codigo = codigo, Preco = preco });
+var csvReader = new CsvReader(
+    new StreamReader("cotacoes_b3_202_05.csv"),
+    new CsvConfiguration(CultureInfo.InvariantCulture) { Delimiter = ";" }
+);
+
+csvReader.Context.RegisterClassMap<CotacaoMap>();
+var cotacoes = csvReader.GetRecords<Cotacao>()
+    .Where(p => p.DataHora.HasValue)
+    .OrderBy(p => p.DataHora)
+    .ToList()
+;
+
+var poolGenes = Enumerable.Range(0, 20)
+    .Select(_ => TradeDnaFactory.DnaTradeFinalPorCotacoes(cotacoes, quantidadeGenes))
+    .ToList();
+
+for (int i = 0; i < 100; i++)
+{
+    Console.WriteLine($"\nGerando nova geração {i + 1}...");
+    poolGenes = AlgoritmoGenetico(poolGenes, cotacoes, montanteInicialCentavos);
 }
 
-var diasUnicos = cotacoes.Select(c => c.Data).Distinct().OrderBy(d => d).ToList();
-double capital = 1000;
-var dna = GerarDnaAleatorio(12, 10, cotacoes);
+return;
 
-for (int i = 0; i < dna.Count; i++) {
-    var compraDia = diasUnicos[i * 2];
-    var vendaDia = diasUnicos[i * 2 + 1];
-    var cotacoesCompra = cotacoes.Where(c => c.Data == compraDia).ToDictionary(c => c.Codigo, c => c.Preco);
-    var cotacoesVenda = cotacoes.Where(c => c.Data == vendaDia).ToDictionary(c => c.Codigo, c => c.Preco);
+List<TradeDna> AlgoritmoGenetico(List<TradeDna> tradeDnas
+    , List<Cotacao> pCotacoes
+    , int pMontanteInicialCentavos
+)
+{
+    var individuos = tradeDnas
+        .Select(p => AvaliarTradeDna(p, pCotacoes, pMontanteInicialCentavos))
+        .ToList();
 
-    double pote = capital / 10;
-    double novoCapital = 0;
+    var melhores = individuos
+        .OrderByDescending(p => p.ValorFinal)
+        .Take(quantidadeAcoesPorDia)
+        .ToList()
+    ;
 
-    foreach (var codigo in dna[i]) {
-        if (cotacoesCompra.ContainsKey(codigo) && cotacoesVenda.ContainsKey(codigo)) {
-            var precoCompra = cotacoesCompra[codigo];
-            var precoVenda = cotacoesVenda[codigo];
-            var qtd = pote / precoCompra;
-            novoCapital += qtd * precoVenda;
-        } else {
-            novoCapital += pote;
+    Console.WriteLine($"Melhor indivíduo: {melhores.Max(p => p.ValorFinal / 100):F2}");
+
+    Console.WriteLine($"Top {melhores.Count} indivíduos selecionados");
+    var pares = SelecionarPares(melhores);
+    Console.WriteLine($"Gerando {pares.Count} filhos...");
+
+    var filhos = pares
+        .Select(ObterFilho)
+        .Select(Mutar)
+        .ToList()
+    ;
+
+    return filhos;
+}
+
+static TradeDna AvaliarTradeDna(TradeDna tradeDna, List<Cotacao> cotacoes, int montanteInicialCentavos)
+{
+    var valorFinal = montanteInicialCentavos;
+    var diaZero = cotacoes.Min(p => p.DataHora!.Value);
+    var quantidadeAcoesProcessadas = 0;
+
+    for (var dia = 0; dia < 24; dia++)
+    {
+        var acoesDoGene = tradeDna.CodigosGenes
+            .Skip(quantidadeAcoesProcessadas)
+            .Take(quantidadeAcoesPorDia)
+            .ToList()
+        ;
+
+        var dataInicio = diaZero.AddDays(dia);
+        var dataFim = dataInicio.AddDays(1);
+
+        var acoesDoDia = cotacoes
+            .Where(p => p.DataHora >= dataInicio && p.DataHora <= dataFim)
+            .Where(p => acoesDoGene.Contains(p.CodigoAcao))
+            .ToList()
+        ;
+
+        foreach (var acao in acoesDoDia)
+        {
+            if (dia % 2 == 0)
+                valorFinal += acao.FechamentoPrecoCentavos;
+            else
+                valorFinal -= acao.FechamentoPrecoCentavos;
+        }
+
+        quantidadeAcoesProcessadas += quantidadeAcoesPorDia;
+    }
+
+    tradeDna.ValorFinal = valorFinal;
+    return tradeDna;
+}
+
+static TradeDna Mutar(TradeDna tradeDna)
+{
+    var genes = tradeDna.CodigosGenes;
+    var i1 = Random.Shared.Next(genes.Count);
+    var i2 = Random.Shared.Next(genes.Count);
+
+    (genes[i1], genes[i2]) = (genes[i2], genes[i1]);
+
+    tradeDna.CodigosGenes = genes;
+    return tradeDna;
+}
+
+static TradeDna ObterFilho((TradeDna pai, TradeDna mae) par)
+{
+    var corte = Random.Shared.Next(quantidadeGenes / 2, (quantidadeGenes / 2) + 40);
+    var dnaMae = par.mae.CodigosGenes.Take(corte).ToList();
+    var dnaPai = par.pai.CodigosGenes.Skip(corte).ToList();
+    return new TradeDna(dnaPai, dnaMae);
+}
+
+List<(TradeDna, TradeDna)> SelecionarPares(List<TradeDna> individuos)
+{
+    var pares = new List<(TradeDna, TradeDna)>();
+    var total = individuos.Count;
+
+    for (int i = 0; i < total; i++)
+    {
+        for (int j = i + 1; j < total; j++)
+        {
+            pares.Add((individuos[i], individuos[j]));
+            pares.Add((individuos[j], individuos[i]));
         }
     }
 
-    capital = novoCapital;
-}
-
-Console.WriteLine($"Capital final: R$ {capital:F2}");
-
-
-List<List<string>> GerarDnaAleatorio(int grupos, int potes, List<Cotacao> cotacoes) {
-    var random = new Random();
-    var acoes = cotacoes.Select(c => c.Codigo).Distinct().ToList();
-    var dna = new List<List<string>>();
-    for (int i = 0; i < grupos; i++) {
-        var grupo = new List<string>();
-        for (int j = 0; j < potes; j++) {
-            var codigo = acoes[random.Next(acoes.Count)];
-            grupo.Add(codigo);
+    var aleatorios = new Random();
+    for (int i = 0; i < total; i++)
+    {
+        var pai = individuos[aleatorios.Next(total)];
+        var mae = individuos[aleatorios.Next(total)];
+        if (pai != mae)
+        {
+            pares.Add((pai, mae));
         }
-        dna.Add(grupo);
     }
-    return dna;
-}
 
-class Cotacao {
-    public DateTime Data { get; set; }
-    public string Codigo { get; set; }
-    public double Preco { get; set; }
+    return pares;
 }

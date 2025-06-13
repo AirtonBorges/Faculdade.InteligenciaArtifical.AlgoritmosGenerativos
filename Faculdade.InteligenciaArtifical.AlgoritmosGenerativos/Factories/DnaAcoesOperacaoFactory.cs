@@ -1,10 +1,10 @@
 ﻿using Faculdade.InteligenciaArtifical.AlgoritmosGenerativos.Models;
 
-namespace Faculdade.InteligenciaArtifical.AlgoritmosGenerativos;
+namespace Faculdade.InteligenciaArtifical.AlgoritmosGenerativos.Factories;
 
-public static class DnaTradeFinalFactory
+public static class TradeDnaFactory
 {
-    public static DnaTradeFinal DnaTradeFinalPorCotacoes(List<Cotacao> cotacoes
+    public static TradeDna DnaTradeFinalPorCotacoes(List<Cotacao> cotacoes
         , int quantidadeGenes)
     {
         var codigoAcoes = cotacoes.DistinctBy(c => c.CodigoAcao)
@@ -12,7 +12,7 @@ public static class DnaTradeFinalFactory
                 .ToList()
             ;
         
-        var dnaAcoesOperacao = new DnaTradeFinal();
+        var dnaAcoesOperacao = new TradeDna();
         var codigosGenes = new List<string>();
 
         for (var i = 0; i < quantidadeGenes; i++)
